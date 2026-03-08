@@ -1,11 +1,17 @@
 const express = require("express");
 const cors = require("cors");
 const morgan = require("morgan");
+const multer = require("multer");
 const { getDb } = require("./db");
 const { SCHOOL_FIELDS } = require("./fields");
+const { importWorkbookBuffer } = require("./importer");
 
 const app = express();
 const db = getDb();
+const upload = multer({
+  storage: multer.memoryStorage(),
+  limits: { fileSize: 25 * 1024 * 1024 }
+});
 
 app.use(cors());
 app.use(express.json());
@@ -13,6 +19,29 @@ app.use(morgan("dev"));
 
 app.get("/health", (_req, res) => {
   res.json({ ok: true });
+});
+
+app.post("/api/import", upload.single("file"), (req, res) => {
+  if (!req.file) {
+    return res.status(400).json({
+      error: "Missing file. Send multipart/form-data with file field name 'file'."
+    });
+  }
+
+  try {
+    const result = importWorkbookBuffer(req.file.buffer);
+    return res.json({
+      message: "Import completed",
+      processed: result.processed,
+      total: result.total,
+      sheetName: result.sheetName
+    });
+  } catch (error) {
+    return res.status(400).json({
+      error: "Import failed",
+      details: error.message
+    });
+  }
 });
 
 function getValueLabelOptions(valueField, labelField, filters = {}) {
