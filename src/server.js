@@ -4,6 +4,7 @@ const morgan = require("morgan");
 const multer = require("multer");
 const { getDb } = require("./db");
 const { SCHOOL_FIELDS } = require("./fields");
+const EDIT_FIELD_ALLOWLIST = ["villageName"];
 const { importWorkbookBuffer } = require("./importer");
 
 const app = express();
@@ -71,7 +72,6 @@ function getValueLabelOptions(valueField, labelField, filters = {}) {
 
 app.get("/api/options", (_req, res) => {
   res.json({
-    districtId: getValueLabelOptions("districtId", "districtName"),
     schCategoryId: getValueLabelOptions("schCategoryId", "schCatDesc"),
     schType: getValueLabelOptions("schType", "schTypeDesc"),
     schMgmtId: getValueLabelOptions("schMgmtId", "schMgmtDesc"),
@@ -80,9 +80,10 @@ app.get("/api/options", (_req, res) => {
 });
 
 app.get("/api/options/blocks", (req, res) => {
+  const stateId = req.query.stateId ? String(req.query.stateId) : "";
   const districtId = req.query.districtId ? String(req.query.districtId) : "";
   res.json({
-    blockId: getValueLabelOptions("blockId", "blockName", { districtId })
+    blockId: getValueLabelOptions("blockId", "blockName", { stateId, districtId })
   });
 });
 
@@ -120,6 +121,96 @@ app.get("/api/options/all", (_req, res) => {
   });
 });
 
+app.get("/api/options/states", (_req, res) => {
+  res.json({ stateId: getValueLabelOptions("stateId", "stateName") });
+});
+
+app.get("/api/options/districts", (req, res) => {
+  const stateId = req.query.stateId ? String(req.query.stateId) : "";
+  res.json({ districtId: getValueLabelOptions("districtId", "districtName", { stateId }) });
+});
+
+app.post("/api/edits", (req, res) => {
+  const { sourceKey, fieldName, newValue, submittedBy } = req.body || {};
+  if (!sourceKey || !fieldName || !newValue || !submittedBy) {
+    return res.status(400).json({ error: "Missing required fields" });
+  }
+  if (!EDIT_FIELD_ALLOWLIST.includes(fieldName)) {
+    return res.status(400).json({ error: "Invalid fieldName" });
+  }
+  const school = db.prepare(`SELECT "${fieldName}" FROM schools WHERE sourceKey = ?`).get(sourceKey);
+  if (!school) {
+    return res.status(400).json({ error: "School not found" });
+  }
+  const oldValue = school[fieldName] ?? null;
+  const submittedAt = new Date().toISOString();
+  const result = db.prepare(
+    `INSERT INTO school_edits (sourceKey, fieldName, oldValue, newValue, submittedBy, submittedAt, status)
+     VALUES (?, ?, ?, ?, ?, ?, 'pending')`
+  ).run(sourceKey, fieldName, oldValue, String(newValue), String(submittedBy), submittedAt);
+  const created = db.prepare(`SELECT * FROM school_edits WHERE id = ?`).get(result.lastInsertRowid);
+  return res.status(201).json(created);
+});
+
+app.get("/api/edits", (req, res) => {
+  const status = req.query.status ? String(req.query.status) : null;
+  const sql = `
+    SELECT e.*, s.schoolName, s.udiseschCode
+    FROM school_edits e
+    LEFT JOIN schools s ON e.sourceKey = s.sourceKey
+    ${status ? "WHERE e.status = ?" : ""}
+    ORDER BY e.submittedAt DESC
+  `;
+  const rows = status
+    ? db.prepare(sql).all(status)
+    : db.prepare(sql).all();
+  return res.json(rows);
+});
+
+app.get("/api/edits/school/:sourceKey", (req, res) => {
+  const sourceKey = req.params.sourceKey;
+  const rows = db.prepare(
+    `SELECT * FROM school_edits WHERE sourceKey = ? AND status = 'pending'`
+  ).all(sourceKey);
+  return res.json(rows);
+});
+
+app.post("/api/edits/:id/approve", (req, res) => {
+  const id = Number.parseInt(req.params.id, 10);
+  const edit = db.prepare(`SELECT * FROM school_edits WHERE id = ?`).get(id);
+  if (!edit) return res.status(404).json({ error: "Edit not found" });
+  if (edit.status !== "pending") return res.status(400).json({ error: "Edit is not pending" });
+  if (!EDIT_FIELD_ALLOWLIST.includes(edit.fieldName)) {
+    return res.status(400).json({ error: "Invalid fieldName" });
+  }
+  const reviewedAt = new Date().toISOString();
+  db.exec("BEGIN");
+  try {
+    db.prepare(`UPDATE schools SET "${edit.fieldName}" = ? WHERE sourceKey = ?`)
+      .run(edit.newValue, edit.sourceKey);
+    db.prepare(`UPDATE school_edits SET status = 'approved', reviewedAt = ? WHERE id = ?`)
+      .run(reviewedAt, id);
+    db.exec("COMMIT");
+  } catch (err) {
+    db.exec("ROLLBACK");
+    return res.status(500).json({ error: "Approval failed", details: err.message });
+  }
+  const updated = db.prepare(`SELECT * FROM school_edits WHERE id = ?`).get(id);
+  return res.json(updated);
+});
+
+app.post("/api/edits/:id/reject", (req, res) => {
+  const id = Number.parseInt(req.params.id, 10);
+  const edit = db.prepare(`SELECT * FROM school_edits WHERE id = ?`).get(id);
+  if (!edit) return res.status(404).json({ error: "Edit not found" });
+  if (edit.status !== "pending") return res.status(400).json({ error: "Edit is not pending" });
+  const reviewedAt = new Date().toISOString();
+  db.prepare(`UPDATE school_edits SET status = 'rejected', reviewedAt = ? WHERE id = ?`)
+    .run(reviewedAt, id);
+  const updated = db.prepare(`SELECT * FROM school_edits WHERE id = ?`).get(id);
+  return res.json(updated);
+});
+
 app.get("/api/schools", (req, res) => {
   const page = Math.max(Number.parseInt(req.query.page || "1", 10), 1);
   const pageSize = Math.min(Math.max(Number.parseInt(req.query.pageSize || "25", 10), 1), 200);
@@ -128,6 +219,7 @@ app.get("/api/schools", (req, res) => {
   const where = [];
   const params = {};
   const equalsFilters = [
+    "stateId",
     "districtId",
     "blockId",
     "villageId",

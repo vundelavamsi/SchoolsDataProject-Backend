@@ -30,6 +30,23 @@ function initDb() {
     CREATE INDEX IF NOT EXISTS idx_schools_schMgmtId ON schools(schMgmtId);
     CREATE INDEX IF NOT EXISTS idx_schools_schCategoryId ON schools(schCategoryId);
     CREATE INDEX IF NOT EXISTS idx_schools_udiseschCode ON schools(udiseschCode);
+    CREATE INDEX IF NOT EXISTS idx_schools_stateId ON schools(stateId);
+  `);
+
+  db.exec(`
+    CREATE TABLE IF NOT EXISTS school_edits (
+      id          INTEGER PRIMARY KEY AUTOINCREMENT,
+      sourceKey   TEXT NOT NULL,
+      fieldName   TEXT NOT NULL,
+      oldValue    TEXT,
+      newValue    TEXT NOT NULL,
+      submittedBy TEXT NOT NULL,
+      submittedAt TEXT NOT NULL,
+      status      TEXT NOT NULL DEFAULT 'pending',
+      reviewedAt  TEXT
+    );
+    CREATE INDEX IF NOT EXISTS idx_edits_sourceKey ON school_edits(sourceKey);
+    CREATE INDEX IF NOT EXISTS idx_edits_status ON school_edits(status);
   `);
 
   return db;
