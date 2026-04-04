@@ -59,11 +59,11 @@ function getValueLabelOptions(valueField, labelField, filters = {}) {
   return db
     .prepare(
       `SELECT
-        "${valueField}" AS value,
+        GROUP_CONCAT(DISTINCT "${valueField}") AS value,
         COALESCE(NULLIF(TRIM("${labelField}"), ''), "${valueField}") AS label
       FROM schools
       WHERE ${where.join(" AND ")}
-      GROUP BY "${valueField}", COALESCE(NULLIF(TRIM("${labelField}"), ''), "${valueField}")
+      GROUP BY COALESCE(NULLIF(TRIM("${labelField}"), ''), "${valueField}")
       ORDER BY label COLLATE NOCASE
       LIMIT 500`
     )
@@ -100,11 +100,11 @@ app.get("/api/options/all", (_req, res) => {
     db
       .prepare(
         `SELECT
-          "${valueField}" AS value,
+          GROUP_CONCAT(DISTINCT "${valueField}") AS value,
           COALESCE(NULLIF(TRIM("${labelField}"), ''), "${valueField}") AS label
         FROM schools
         WHERE "${valueField}" IS NOT NULL AND TRIM("${valueField}") <> ''
-        GROUP BY "${valueField}", COALESCE(NULLIF(TRIM("${labelField}"), ''), "${valueField}")
+        GROUP BY COALESCE(NULLIF(TRIM("${labelField}"), ''), "${valueField}")
         ORDER BY label COLLATE NOCASE
         LIMIT 500`
       )
@@ -119,6 +119,26 @@ app.get("/api/options/all", (_req, res) => {
     schMgmtId: getLegacyValueLabelOptions("schMgmtId", "schMgmtDesc"),
     schoolStatus: getLegacyValueLabelOptions("schoolStatus", "schoolStatusName")
   });
+});
+
+app.get("/api/options/classRanges", (_req, res) => {
+  const rows = db
+    .prepare(
+      `SELECT classFrm, classTo, COUNT(*) AS cnt
+       FROM schools
+       WHERE classFrm IS NOT NULL AND TRIM(classFrm) <> ''
+         AND classTo IS NOT NULL AND TRIM(classTo) <> ''
+       GROUP BY classFrm, classTo
+       ORDER BY cnt DESC`
+    )
+    .all();
+
+  const classRange = rows.map((r) => ({
+    value: `${r.classFrm}-${r.classTo}`,
+    label: `Class ${r.classFrm} – ${r.classTo}`,
+  }));
+
+  res.json({ classRange });
 });
 
 app.get("/api/options/states", (_req, res) => {
@@ -155,7 +175,7 @@ app.post("/api/edits", (req, res) => {
 app.get("/api/edits", (req, res) => {
   const status = req.query.status ? String(req.query.status) : null;
   const sql = `
-    SELECT e.*, s.schoolName, s.udiseschCode
+    SELECT e.*, s.schoolName, s.udiseschCode, s.blockCd
     FROM school_edits e
     LEFT JOIN schools s ON e.sourceKey = s.sourceKey
     ${status ? "WHERE e.status = ?" : ""}
@@ -232,19 +252,25 @@ app.get("/api/schools", (req, res) => {
   for (const key of equalsFilters) {
     const value = req.query[key];
     if (value) {
-      where.push(`"${key}" = @${key}`);
-      params[key] = String(value);
+      const values = String(value).split(",").map((v) => v.trim()).filter(Boolean);
+      if (values.length === 1) {
+        where.push(`"${key}" = @${key}`);
+        params[key] = values[0];
+      } else if (values.length > 1) {
+        const placeholders = values.map((v, i) => `@${key}_${i}`);
+        where.push(`"${key}" IN (${placeholders.join(", ")})`);
+        values.forEach((v, i) => { params[`${key}_${i}`] = v; });
+      }
     }
   }
 
-  if (req.query.classFromMin) {
-    where.push(`CAST(classFrm AS INTEGER) >= @classFromMin`);
-    params.classFromMin = Number.parseInt(req.query.classFromMin, 10);
-  }
-
-  if (req.query.classToMax) {
-    where.push(`CAST(classTo AS INTEGER) <= @classToMax`);
-    params.classToMax = Number.parseInt(req.query.classToMax, 10);
+  if (req.query.classRange) {
+    const parts = String(req.query.classRange).split("-");
+    if (parts.length === 2) {
+      where.push(`classFrm = @classFrm AND classTo = @classTo`);
+      params.classFrm = parts[0].trim();
+      params.classTo = parts[1].trim();
+    }
   }
 
   if (req.query.search) {
@@ -255,7 +281,7 @@ app.get("/api/schools", (req, res) => {
   }
 
   const whereClause = where.length > 0 ? `WHERE ${where.join(" AND ")}` : "";
-  const listColumns = SCHOOL_FIELDS.map((field) => `"${field}"`).join(", ");
+  const listColumns = `"sourceKey", ${SCHOOL_FIELDS.map((field) => `"${field}"`).join(", ")}`;
 
   const total = db.prepare(`SELECT COUNT(*) AS count FROM schools ${whereClause}`).get(params).count;
   const rows = db
