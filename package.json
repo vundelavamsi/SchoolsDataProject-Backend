@@ -4,8 +4,8 @@
   "description": "School filtering backend API with SQLite",
   "main": "src/server.js",
   "scripts": {
-    "dev": "node --max-old-space-size=512 src/server.js",
-    "start": "node --max-old-space-size=512 src/server.js",
+    "dev": "node src/server.js",
+    "start": "node src/server.js",
     "test": "node -e \"console.log('No tests configured')\""
   },
   "keywords": [

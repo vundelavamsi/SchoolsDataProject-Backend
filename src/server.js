@@ -22,7 +22,7 @@ app.get("/health", (_req, res) => {
   res.json({ ok: true });
 });
 
-app.post("/api/import", upload.single("file"), (req, res) => {
+app.post("/api/import", upload.single("file"), async (req, res) => {
   if (!req.file) {
     return res.status(400).json({
       error: "Missing file. Send multipart/form-data with file field name 'file'."
@@ -30,7 +30,7 @@ app.post("/api/import", upload.single("file"), (req, res) => {
   }
 
   try {
-    const result = importWorkbookBuffer(req.file.buffer);
+    const result = await importWorkbookBuffer(req.file.buffer);
     return res.json({
       message: "Import completed",
       processed: result.processed,
