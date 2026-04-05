@@ -1,10 +1,8 @@
 const { Readable } = require("node:stream");
 const { createInterface } = require("node:readline");
 const xlsx = require("xlsx");
-const { getDb } = require("./db");
+const { pool } = require("./db");
 const { SCHOOL_FIELDS } = require("./fields");
-
-const db = getDb();
 
 function getSourceKey(record, index) {
   if (record.schoolId) return `schoolId:${record.schoolId}`;
@@ -12,22 +10,20 @@ function getSourceKey(record, index) {
   return `row:${index + 1}`;
 }
 
-// Minimal CSV field parser that handles quoted fields with commas/newlines
 function parseCSVLine(line) {
   const fields = [];
   let i = 0;
   while (i < line.length) {
     if (line[i] === '"') {
-      // Quoted field
       let val = "";
-      i++; // skip opening quote
+      i++;
       while (i < line.length) {
         if (line[i] === '"') {
           if (i + 1 < line.length && line[i + 1] === '"') {
             val += '"';
             i += 2;
           } else {
-            i++; // skip closing quote
+            i++;
             break;
           }
         } else {
@@ -36,9 +32,8 @@ function parseCSVLine(line) {
         }
       }
       fields.push(val);
-      if (i < line.length && line[i] === ",") i++; // skip comma
+      if (i < line.length && line[i] === ",") i++;
     } else {
-      // Unquoted field
       const next = line.indexOf(",", i);
       if (next === -1) {
         fields.push(line.slice(i));
@@ -51,8 +46,33 @@ function parseCSVLine(line) {
   return fields;
 }
 
+async function flushBatch(db, batch, columns) {
+  if (batch.length === 0) return;
+
+  const values = [];
+  const rowPlaceholders = [];
+  let paramIndex = 1;
+
+  for (const row of batch) {
+    const placeholders = columns.map(() => `$${paramIndex++}`);
+    rowPlaceholders.push(`(${placeholders.join(", ")})`);
+    for (const col of columns) {
+      values.push(row[col] ?? null);
+    }
+  }
+
+  const sql = `
+    INSERT INTO schools (${columns.map((c) => `"${c}"`).join(", ")})
+    VALUES ${rowPlaceholders.join(",\n")}
+    ON CONFLICT ("sourceKey") DO UPDATE SET
+    ${SCHOOL_FIELDS.map((c) => `"${c}" = EXCLUDED."${c}"`).join(",\n")}
+  `;
+
+  await db.query(sql, values);
+}
+
 async function importWorkbookBuffer(buffer) {
-  // Step 1: Convert Excel to CSV string using xlsx (lightweight conversion)
+  console.log(`[import] Received buffer: ${(buffer.length / 1024 / 1024).toFixed(1)} MB`);
   const workbook = xlsx.read(buffer, {
     type: "buffer",
     cellFormula: false,
@@ -64,11 +84,12 @@ async function importWorkbookBuffer(buffer) {
   const sheet = workbook.Sheets[firstSheetName];
   const csvString = xlsx.utils.sheet_to_csv(sheet, { blankrows: false });
 
-  // Free the workbook from memory immediately
+  console.log(`[import] CSV generated: ${(csvString.length / 1024 / 1024).toFixed(1)} MB, sheet: ${firstSheetName}`);
+
+  // Free workbook from memory
   workbook.SheetNames.length = 0;
   Object.keys(workbook.Sheets).forEach((k) => delete workbook.Sheets[k]);
 
-  // Step 2: Stream-parse the CSV line by line
   const stream = Readable.from(csvString);
   const rl = createInterface({ input: stream, crlfDelay: Infinity });
 
@@ -76,64 +97,56 @@ async function importWorkbookBuffer(buffer) {
   let headerToCol = {};
   let rowIndex = 0;
   let processed = 0;
-  const BATCH_SIZE = 5000;
-
+  const BATCH_SIZE = 50;
   const columns = ["sourceKey", ...SCHOOL_FIELDS];
-  const insertSql = `
-    INSERT INTO schools (${columns.map((c) => `"${c}"`).join(", ")})
-    VALUES (${columns.map((c) => `@${c}`).join(", ")})
-    ON CONFLICT(sourceKey) DO UPDATE SET
-    ${SCHOOL_FIELDS.map((c) => `"${c}"=excluded."${c}"`).join(",\n    ")};
-  `;
-  const insertStmt = db.prepare(insertSql);
 
-  db.exec("BEGIN;");
+  console.log("[import] Starting row processing...");
 
-  try {
-    for await (const line of rl) {
-      if (!line.trim()) continue;
+  let batch = [];
 
-      const fields = parseCSVLine(line);
+  for await (const line of rl) {
+    if (!line.trim()) continue;
 
-      if (!headers) {
-        // First line = headers
-        headers = fields.map((h) => h.trim());
-        for (let c = 0; c < headers.length; c++) {
-          if (SCHOOL_FIELDS.includes(headers[c])) {
-            headerToCol[headers[c]] = c;
-          }
+    const fields = parseCSVLine(line);
+
+    if (!headers) {
+      headers = fields.map((h) => h.trim());
+      for (let c = 0; c < headers.length; c++) {
+        if (SCHOOL_FIELDS.includes(headers[c])) {
+          headerToCol[headers[c]] = c;
         }
-        continue;
       }
-
-      // Build record from this row
-      const record = {};
-      for (const field of SCHOOL_FIELDS) {
-        const col = headerToCol[field];
-        const val = col !== undefined && col < fields.length ? fields[col] : null;
-        record[field] = val != null && String(val).trim() !== "" ? String(val).trim() : null;
-      }
-
-      rowIndex++;
-      insertStmt.run({
-        sourceKey: getSourceKey(record, rowIndex),
-        ...record,
-      });
-      processed++;
-
-      if (processed % BATCH_SIZE === 0) {
-        db.exec("COMMIT;");
-        db.exec("BEGIN;");
-      }
+      console.log(`[import] Found ${Object.keys(headerToCol).length} matching columns`);
+      continue;
     }
 
-    db.exec("COMMIT;");
-  } catch (error) {
-    db.exec("ROLLBACK;");
-    throw error;
+    const record = {};
+    for (const field of SCHOOL_FIELDS) {
+      const col = headerToCol[field];
+      const val = col !== undefined && col < fields.length ? fields[col] : null;
+      record[field] = val != null && String(val).trim() !== "" ? String(val).trim() : null;
+    }
+
+    rowIndex++;
+    batch.push({ sourceKey: getSourceKey(record, rowIndex), ...record });
+
+    if (batch.length >= BATCH_SIZE) {
+      const t = Date.now();
+      await flushBatch(pool, batch, columns);
+      processed += batch.length;
+      console.log(`[import] Processed ${processed} rows (${Date.now() - t}ms)`);
+      batch = [];
+    }
   }
 
-  const total = db.prepare("SELECT COUNT(*) AS count FROM schools").get().count;
+  if (batch.length > 0) {
+    await flushBatch(pool, batch, columns);
+    processed += batch.length;
+    console.log(`[import] Processed ${processed} rows (final batch)`);
+  }
+
+  const countResult = await pool.query("SELECT COUNT(*) AS count FROM schools");
+  const total = parseInt(countResult.rows[0].count, 10);
   return { processed, total, sheetName: firstSheetName };
 }
 

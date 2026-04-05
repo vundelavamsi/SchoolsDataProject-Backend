@@ -1,62 +1,51 @@
-const fs = require("node:fs");
-const path = require("node:path");
-const { DatabaseSync } = require("node:sqlite");
+const { Pool } = require("pg");
 const { SCHOOL_FIELDS } = require("./fields");
 
-const DATA_DIR = path.resolve(__dirname, "..", "data");
-const DB_PATH = path.join(DATA_DIR, "schools.db");
+const connectionString = process.env.DATABASE_URL;
+const isRemote = connectionString && !connectionString.includes("localhost") && !connectionString.includes("127.0.0.1");
 
-let db;
+const pool = new Pool({
+  connectionString,
+  ssl: isRemote ? { rejectUnauthorized: false } : false,
+  max: 20,
+});
 
-function initDb() {
-  fs.mkdirSync(DATA_DIR, { recursive: true });
-  db = new DatabaseSync(DB_PATH);
-  db.exec("PRAGMA journal_mode = WAL;");
+async function initDb() {
+  const allColumns = SCHOOL_FIELDS.map((field) => `"${field}" TEXT`).join(",\n    ");
 
-  const allColumns = SCHOOL_FIELDS.map((field) => `"${field}" TEXT`).join(",\n");
-  db.exec(`
+  await pool.query(`
     CREATE TABLE IF NOT EXISTS schools (
-      sourceKey TEXT PRIMARY KEY,
+      "sourceKey" TEXT PRIMARY KEY,
       ${allColumns}
-    );
+    )
   `);
 
-  db.exec(`
-    CREATE INDEX IF NOT EXISTS idx_schools_districtId ON schools(districtId);
-    CREATE INDEX IF NOT EXISTS idx_schools_blockId ON schools(blockId);
-    CREATE INDEX IF NOT EXISTS idx_schools_villageId ON schools(villageId);
-    CREATE INDEX IF NOT EXISTS idx_schools_schoolStatus ON schools(schoolStatus);
-    CREATE INDEX IF NOT EXISTS idx_schools_schType ON schools(schType);
-    CREATE INDEX IF NOT EXISTS idx_schools_schMgmtId ON schools(schMgmtId);
-    CREATE INDEX IF NOT EXISTS idx_schools_schCategoryId ON schools(schCategoryId);
-    CREATE INDEX IF NOT EXISTS idx_schools_udiseschCode ON schools(udiseschCode);
-    CREATE INDEX IF NOT EXISTS idx_schools_stateId ON schools(stateId);
-  `);
+  await pool.query(`CREATE INDEX IF NOT EXISTS idx_schools_districtId ON schools("districtId")`);
+  await pool.query(`CREATE INDEX IF NOT EXISTS idx_schools_blockId ON schools("blockId")`);
+  await pool.query(`CREATE INDEX IF NOT EXISTS idx_schools_villageId ON schools("villageId")`);
+  await pool.query(`CREATE INDEX IF NOT EXISTS idx_schools_schoolStatus ON schools("schoolStatus")`);
+  await pool.query(`CREATE INDEX IF NOT EXISTS idx_schools_schType ON schools("schType")`);
+  await pool.query(`CREATE INDEX IF NOT EXISTS idx_schools_schMgmtId ON schools("schMgmtId")`);
+  await pool.query(`CREATE INDEX IF NOT EXISTS idx_schools_schCategoryId ON schools("schCategoryId")`);
+  await pool.query(`CREATE INDEX IF NOT EXISTS idx_schools_udiseschCode ON schools("udiseschCode")`);
+  await pool.query(`CREATE INDEX IF NOT EXISTS idx_schools_stateId ON schools("stateId")`);
 
-  db.exec(`
+  await pool.query(`
     CREATE TABLE IF NOT EXISTS school_edits (
-      id          INTEGER PRIMARY KEY AUTOINCREMENT,
-      sourceKey   TEXT NOT NULL,
-      fieldName   TEXT NOT NULL,
-      oldValue    TEXT,
-      newValue    TEXT NOT NULL,
-      submittedBy TEXT NOT NULL,
-      submittedAt TEXT NOT NULL,
-      status      TEXT NOT NULL DEFAULT 'pending',
-      reviewedAt  TEXT
-    );
-    CREATE INDEX IF NOT EXISTS idx_edits_sourceKey ON school_edits(sourceKey);
-    CREATE INDEX IF NOT EXISTS idx_edits_status ON school_edits(status);
+      id SERIAL PRIMARY KEY,
+      "sourceKey" TEXT NOT NULL,
+      "fieldName" TEXT NOT NULL,
+      "oldValue" TEXT,
+      "newValue" TEXT NOT NULL,
+      "submittedBy" TEXT NOT NULL,
+      "submittedAt" TEXT NOT NULL,
+      status TEXT NOT NULL DEFAULT 'pending',
+      "reviewedAt" TEXT
+    )
   `);
 
-  return db;
+  await pool.query(`CREATE INDEX IF NOT EXISTS idx_edits_sourceKey ON school_edits("sourceKey")`);
+  await pool.query(`CREATE INDEX IF NOT EXISTS idx_edits_status ON school_edits(status)`);
 }
 
-function getDb() {
-  if (!db) {
-    return initDb();
-  }
-  return db;
-}
-
-module.exports = { getDb, DB_PATH };
+module.exports = { pool, initDb };
