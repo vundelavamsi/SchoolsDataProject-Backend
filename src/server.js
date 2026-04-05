@@ -4,14 +4,14 @@ const morgan = require("morgan");
 const multer = require("multer");
 const { getDb } = require("./db");
 const { SCHOOL_FIELDS } = require("./fields");
-const EDIT_FIELD_ALLOWLIST = ["villageName"];
+const EDIT_FIELD_ALLOWLIST = ["villageName", "gmapLocationLink"];
 const { importWorkbookBuffer } = require("./importer");
 
 const app = express();
 const db = getDb();
 const upload = multer({
   storage: multer.memoryStorage(),
-  limits: { fileSize: 25 * 1024 * 1024 }
+  limits: { fileSize: 100 * 1024 * 1024 }
 });
 
 app.use(cors());
@@ -75,7 +75,8 @@ app.get("/api/options", (_req, res) => {
     schCategoryId: getValueLabelOptions("schCategoryId", "schCatDesc"),
     schType: getValueLabelOptions("schType", "schTypeDesc"),
     schMgmtId: getValueLabelOptions("schMgmtId", "schMgmtDesc"),
-    schoolStatus: getValueLabelOptions("schoolStatus", "schoolStatusName")
+    schoolStatus: getValueLabelOptions("schoolStatus", "schoolStatusName"),
+    schLocRuralUrban: getValueLabelOptions("schLocRuralUrban", "schLocDesc").filter((o) => ["Rural", "Urban"].includes(o.label))
   });
 });
 
@@ -246,7 +247,8 @@ app.get("/api/schools", (req, res) => {
     "schCategoryId",
     "schType",
     "schMgmtId",
-    "schoolStatus"
+    "schoolStatus",
+    "schLocRuralUrban"
   ];
 
   for (const key of equalsFilters) {

@@ -20,8 +20,6 @@ const SCHOOL_FIELDS = [
   "classFrm",
   "classTo",
   "schoolStatus",
-  "schIdMerged",
-  "schMergedYear",
   "stateName",
   "districtName",
   "blockName",
@@ -34,12 +32,7 @@ const SCHOOL_FIELDS = [
   "schmgmtParentId",
   "schBroadMgmtId",
   "schMgmtDescSt",
-  "isOperational2018To19",
-  "isOperational2019To20",
   "lgdStateId",
-  "isOperational2020To21",
-  "isOperational2021To22",
-  "isOperational2022To23",
   "address",
   "email",
   "lgdurbanlocalbodyId",
@@ -57,7 +50,8 @@ const SCHOOL_FIELDS = [
   "keyFlag",
   "yearId",
   "schoolStatusName",
-  "isNewCY"
+  "isNewCY",
+  "gmapLocationLink"
 ];
 
 module.exports = { SCHOOL_FIELDS };
