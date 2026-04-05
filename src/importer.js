@@ -1,5 +1,3 @@
-const { Readable } = require("node:stream");
-const { createInterface } = require("node:readline");
 const xlsx = require("xlsx");
 const { pool } = require("./db");
 const { SCHOOL_FIELDS } = require("./fields");
@@ -10,43 +8,15 @@ function getSourceKey(record, index) {
   return `row:${index + 1}`;
 }
 
-function parseCSVLine(line) {
-  const fields = [];
-  let i = 0;
-  while (i < line.length) {
-    if (line[i] === '"') {
-      let val = "";
-      i++;
-      while (i < line.length) {
-        if (line[i] === '"') {
-          if (i + 1 < line.length && line[i + 1] === '"') {
-            val += '"';
-            i += 2;
-          } else {
-            i++;
-            break;
-          }
-        } else {
-          val += line[i];
-          i++;
-        }
-      }
-      fields.push(val);
-      if (i < line.length && line[i] === ",") i++;
-    } else {
-      const next = line.indexOf(",", i);
-      if (next === -1) {
-        fields.push(line.slice(i));
-        break;
-      }
-      fields.push(line.slice(i, next));
-      i = next + 1;
-    }
-  }
-  return fields;
+function cellValue(sheet, r, c) {
+  const addr = xlsx.utils.encode_cell({ r, c });
+  const cell = sheet[addr];
+  if (!cell) return null;
+  const v = cell.w !== undefined ? cell.w : (cell.v !== undefined ? String(cell.v) : null);
+  return v == null ? null : String(v).trim();
 }
 
-async function flushBatch(db, batch, columns) {
+async function flushBatch(batch, columns) {
   if (batch.length === 0) return;
 
   const values = [];
@@ -68,11 +38,12 @@ async function flushBatch(db, batch, columns) {
     ${SCHOOL_FIELDS.map((c) => `"${c}" = EXCLUDED."${c}"`).join(",\n")}
   `;
 
-  await db.query(sql, values);
+  await pool.query(sql, values);
 }
 
 async function importWorkbookBuffer(buffer) {
   console.log(`[import] Received buffer: ${(buffer.length / 1024 / 1024).toFixed(1)} MB`);
+
   const workbook = xlsx.read(buffer, {
     type: "buffer",
     cellFormula: false,
@@ -82,57 +53,45 @@ async function importWorkbookBuffer(buffer) {
   });
   const firstSheetName = workbook.SheetNames[0];
   const sheet = workbook.Sheets[firstSheetName];
-  const csvString = xlsx.utils.sheet_to_csv(sheet, { blankrows: false });
+  const range = xlsx.utils.decode_range(sheet["!ref"]);
 
-  console.log(`[import] CSV generated: ${(csvString.length / 1024 / 1024).toFixed(1)} MB, sheet: ${firstSheetName}`);
+  console.log(`[import] Sheet: ${firstSheetName}, rows: ${range.e.r - range.s.r}`);
 
-  // Free workbook from memory
-  workbook.SheetNames.length = 0;
-  Object.keys(workbook.Sheets).forEach((k) => delete workbook.Sheets[k]);
+  // Read headers
+  const headers = [];
+  for (let c = range.s.c; c <= range.e.c; c++) {
+    const v = cellValue(sheet, range.s.r, c);
+    headers.push(v ? v.trim() : `col_${c}`);
+  }
 
-  const stream = Readable.from(csvString);
-  const rl = createInterface({ input: stream, crlfDelay: Infinity });
+  const headerToCol = {};
+  for (let c = 0; c < headers.length; c++) {
+    if (SCHOOL_FIELDS.includes(headers[c])) {
+      headerToCol[headers[c]] = c;
+    }
+  }
+  console.log(`[import] Found ${Object.keys(headerToCol).length} matching columns`);
 
-  let headers = null;
-  let headerToCol = {};
-  let rowIndex = 0;
-  let processed = 0;
-  const BATCH_SIZE = 50;
   const columns = ["sourceKey", ...SCHOOL_FIELDS];
-
-  console.log("[import] Starting row processing...");
-
+  const BATCH_SIZE = 50;
+  let processed = 0;
   let batch = [];
 
-  for await (const line of rl) {
-    if (!line.trim()) continue;
-
-    const fields = parseCSVLine(line);
-
-    if (!headers) {
-      headers = fields.map((h) => h.trim());
-      for (let c = 0; c < headers.length; c++) {
-        if (SCHOOL_FIELDS.includes(headers[c])) {
-          headerToCol[headers[c]] = c;
-        }
-      }
-      console.log(`[import] Found ${Object.keys(headerToCol).length} matching columns`);
-      continue;
-    }
-
+  for (let r = range.s.r + 1; r <= range.e.r; r++) {
     const record = {};
     for (const field of SCHOOL_FIELDS) {
       const col = headerToCol[field];
-      const val = col !== undefined && col < fields.length ? fields[col] : null;
-      record[field] = val != null && String(val).trim() !== "" ? String(val).trim() : null;
+      record[field] = col !== undefined ? cellValue(sheet, r, col) : null;
     }
 
-    rowIndex++;
-    batch.push({ sourceKey: getSourceKey(record, rowIndex), ...record });
+    const hasData = SCHOOL_FIELDS.some((f) => record[f] != null && record[f] !== "");
+    if (!hasData) continue;
+
+    batch.push({ sourceKey: getSourceKey(record, r), ...record });
 
     if (batch.length >= BATCH_SIZE) {
       const t = Date.now();
-      await flushBatch(pool, batch, columns);
+      await flushBatch(batch, columns);
       processed += batch.length;
       console.log(`[import] Processed ${processed} rows (${Date.now() - t}ms)`);
       batch = [];
@@ -140,13 +99,14 @@ async function importWorkbookBuffer(buffer) {
   }
 
   if (batch.length > 0) {
-    await flushBatch(pool, batch, columns);
+    await flushBatch(batch, columns);
     processed += batch.length;
     console.log(`[import] Processed ${processed} rows (final batch)`);
   }
 
   const countResult = await pool.query("SELECT COUNT(*) AS count FROM schools");
   const total = parseInt(countResult.rows[0].count, 10);
+  console.log(`[import] Complete: ${processed} processed, ${total} total in DB`);
   return { processed, total, sheetName: firstSheetName };
 }
 

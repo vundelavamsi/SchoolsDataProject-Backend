@@ -314,7 +314,7 @@ app.get("/api/schools", async (req, res) => {
   if (req.query.search) {
     const searchParam = `%${String(req.query.search).trim()}%`;
     where.push(
-      `("schoolName" ILIKE $${paramIndex} OR "udiseschCode" ILIKE $${paramIndex} OR "schoolId" ILIKE $${paramIndex} OR "villageName" ILIKE $${paramIndex} OR "blockName" ILIKE $${paramIndex} OR "districtName" ILIKE $${paramIndex})`
+      `("schoolName" ILIKE $${paramIndex} OR "villageName" ILIKE $${paramIndex} OR "blockName" ILIKE $${paramIndex} OR "districtName" ILIKE $${paramIndex} OR CONCAT("blockCd", REPLACE("udiseschCode", '******', '')) ILIKE $${paramIndex})`
     );
     values.push(searchParam);
     paramIndex++;
