@@ -38,14 +38,28 @@ async function initDb() {
       "oldValue" TEXT,
       "newValue" TEXT NOT NULL,
       "submittedBy" TEXT NOT NULL,
+      "submittedPhone" TEXT,
       "submittedAt" TEXT NOT NULL,
       status TEXT NOT NULL DEFAULT 'pending',
       "reviewedAt" TEXT
     )
   `);
 
+  await pool.query(`ALTER TABLE school_edits ADD COLUMN IF NOT EXISTS "submittedPhone" TEXT`);
+
   await pool.query(`CREATE INDEX IF NOT EXISTS idx_edits_sourceKey ON school_edits("sourceKey")`);
   await pool.query(`CREATE INDEX IF NOT EXISTS idx_edits_status ON school_edits(status)`);
+  await pool.query(`CREATE INDEX IF NOT EXISTS idx_edits_submittedPhone ON school_edits("submittedPhone")`);
+
+  await pool.query(`
+    CREATE TABLE IF NOT EXISTS phone_access (
+      phone TEXT PRIMARY KEY,
+      role TEXT NOT NULL CHECK (role IN ('edit', 'review')),
+      "blockIds" TEXT[] NOT NULL DEFAULT ARRAY[]::TEXT[],
+      "createdAt" TEXT NOT NULL,
+      "updatedAt" TEXT NOT NULL
+    )
+  `);
 }
 
 module.exports = { pool, initDb };
