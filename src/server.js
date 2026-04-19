@@ -5,7 +5,7 @@ const morgan = require("morgan");
 const multer = require("multer");
 const { pool, initDb } = require("./db");
 const { SCHOOL_FIELDS } = require("./fields");
-const EDIT_FIELD_ALLOWLIST = ["villageName", "gmapLocationLink"];
+const EDIT_FIELD_ALLOWLIST = ["villageName", "pincode", "classFrm", "classTo", "gmapLocationLink"];
 const { importWorkbookBuffer } = require("./importer");
 const {
   VALID_ROLES,
