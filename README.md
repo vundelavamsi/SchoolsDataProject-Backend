@@ -15,6 +15,23 @@ Runs at `http://localhost:3001` by default.
 
 - `npm run dev` - start backend server
 - `npm run start` - start backend server
+- `npm run migrate:database` - migrate data from `DATABASE_URL` to `DATABASE_URL_v1`
+
+## Database migration
+
+Use this when moving to a new PostgreSQL instance.
+
+1. Set both environment variables:
+   - `DATABASE_URL` (current/source database)
+   - `DATABASE_URL_v1` (new/target database)
+2. Run:
+
+```bash
+npm run migrate:database
+```
+
+Optional:
+- `DB_MIGRATION_BATCH_SIZE` can be set (default: `250`).
 
 ## API endpoints
 

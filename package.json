@@ -6,6 +6,7 @@
   "scripts": {
     "dev": "node src/server.js",
     "start": "node src/server.js",
+    "migrate:database": "node scripts/migrate-database.js",
     "test": "node -e \"console.log('No tests configured')\""
   },
   "keywords": [
