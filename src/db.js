@@ -54,11 +54,41 @@ async function initDb() {
   await pool.query(`
     CREATE TABLE IF NOT EXISTS phone_access (
       phone TEXT PRIMARY KEY,
-      role TEXT NOT NULL CHECK (role IN ('edit', 'review')),
+      name TEXT NOT NULL DEFAULT '',
+      role TEXT NOT NULL CHECK (role IN ('edit', 'review', 'admin')),
+      status TEXT NOT NULL DEFAULT 'active' CHECK (status IN ('active', 'inactive')),
       "blockIds" TEXT[] NOT NULL DEFAULT ARRAY[]::TEXT[],
       "createdAt" TEXT NOT NULL,
       "updatedAt" TEXT NOT NULL
     )
+  `);
+
+  await pool.query(`ALTER TABLE phone_access ADD COLUMN IF NOT EXISTS name TEXT NOT NULL DEFAULT ''`);
+  await pool.query(`ALTER TABLE phone_access ADD COLUMN IF NOT EXISTS status TEXT NOT NULL DEFAULT 'active'`);
+  await pool.query(`UPDATE phone_access SET status = 'active' WHERE status IS NULL OR status = ''`);
+  await pool.query(`
+    DO $$
+    BEGIN
+      IF EXISTS (
+        SELECT 1 FROM pg_constraint WHERE conname = 'phone_access_role_check'
+      ) THEN
+        ALTER TABLE phone_access DROP CONSTRAINT phone_access_role_check;
+      END IF;
+      ALTER TABLE phone_access
+        ADD CONSTRAINT phone_access_role_check CHECK (role IN ('edit', 'review', 'admin'));
+    END $$;
+  `);
+  await pool.query(`
+    DO $$
+    BEGIN
+      IF EXISTS (
+        SELECT 1 FROM pg_constraint WHERE conname = 'phone_access_status_check'
+      ) THEN
+        ALTER TABLE phone_access DROP CONSTRAINT phone_access_status_check;
+      END IF;
+      ALTER TABLE phone_access
+        ADD CONSTRAINT phone_access_status_check CHECK (status IN ('active', 'inactive'));
+    END $$;
   `);
 }
 

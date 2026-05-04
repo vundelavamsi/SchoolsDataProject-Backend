@@ -15,6 +15,7 @@ const {
   addBlockScopeFilter,
   assertSchoolInScope,
 } = require("./access");
+const VALID_ACCESS_STATUSES = ["active", "inactive"];
 
 const app = express();
 const upload = multer({
@@ -25,6 +26,14 @@ const upload = multer({
 app.use(cors());
 app.use(express.json());
 app.use(morgan("dev"));
+
+function ensureAdminAccess(access, res) {
+  if (!access?.canAdmin || !access?.phone) {
+    res.status(403).json({ error: "Admin access is required for this operation" });
+    return false;
+  }
+  return true;
+}
 
 app.get("/health", (_req, res) => {
   res.json({ ok: true });
@@ -81,7 +90,7 @@ async function getValueLabelOptions(valueField, labelField, filters = {}, access
      WHERE ${where.join(" AND ")}
      GROUP BY COALESCE(NULLIF(TRIM("${labelField}"), ''), "${valueField}")
      ORDER BY LOWER(COALESCE(NULLIF(TRIM("${labelField}"), ''), "${valueField}"))
-     LIMIT 500`,
+     LIMIT 10000`,
     values
   );
   return rows;
@@ -139,7 +148,7 @@ app.get("/api/options/all", async (req, res) => {
        WHERE ${where.join(" AND ")}
         GROUP BY COALESCE(NULLIF(TRIM("${labelField}"), ''), "${valueField}")
         ORDER BY LOWER(COALESCE(NULLIF(TRIM("${labelField}"), ''), "${valueField}"))
-       LIMIT 500`,
+       LIMIT 10000`,
       values
     );
     return rows;
@@ -203,18 +212,23 @@ app.get("/api/access", async (req, res) => {
   const access = await resolveAccess(req);
   return res.json({
     phone: access.phone,
+    name: access.name,
     authenticated: access.authenticated,
     role: access.role,
+    status: access.status,
     canEdit: access.canEdit,
     canReview: access.canReview,
+    canAdmin: access.canAdmin,
     blockIds: access.blockIds,
     scope: access.scope,
   });
 });
 
-app.get("/api/access/phones", async (_req, res) => {
+app.get("/api/access/phones", async (req, res) => {
+  const access = await resolveAccess(req);
+  if (!ensureAdminAccess(access, res)) return;
   const { rows } = await pool.query(
-    `SELECT phone, role, COALESCE("blockIds", ARRAY[]::TEXT[]) AS "blockIds", "createdAt", "updatedAt"
+    `SELECT phone, name, role, status, COALESCE("blockIds", ARRAY[]::TEXT[]) AS "blockIds", "createdAt", "updatedAt"
      FROM phone_access
      ORDER BY "updatedAt" DESC`
   );
@@ -222,40 +236,92 @@ app.get("/api/access/phones", async (_req, res) => {
 });
 
 app.post("/api/access/phones", async (req, res) => {
+  const access = await resolveAccess(req);
+  if (!ensureAdminAccess(access, res)) return;
+
   const rawPhone = req.body?.phone;
+  const name = String(req.body?.name || "").trim();
   const role = String(req.body?.role || "").trim();
+  const status = String(req.body?.status || "active").trim().toLowerCase();
   const phone = normalizePhone(rawPhone);
   const blockIds = parseBlockIds(req.body?.blockIds);
 
   if (!phone) {
     return res.status(400).json({ error: "Valid phone is required" });
   }
+  if (!name) {
+    return res.status(400).json({ error: "name is required" });
+  }
   if (!VALID_ROLES.includes(role)) {
-    return res.status(400).json({ error: "role must be one of: edit, review" });
+    return res.status(400).json({ error: "role must be one of: edit, review, admin" });
+  }
+  if (!VALID_ACCESS_STATUSES.includes(status)) {
+    return res.status(400).json({ error: "status must be one of: active, inactive" });
   }
 
   const now = new Date().toISOString();
   const { rows } = await pool.query(
-    `INSERT INTO phone_access (phone, role, "blockIds", "createdAt", "updatedAt")
-     VALUES ($1, $2, $3, $4, $4)
+    `INSERT INTO phone_access (phone, name, role, status, "blockIds", "createdAt", "updatedAt")
+     VALUES ($1, $2, $3, $4, $5, $6, $6)
      ON CONFLICT (phone) DO UPDATE SET
+       name = EXCLUDED.name,
        role = EXCLUDED.role,
+       status = EXCLUDED.status,
        "blockIds" = EXCLUDED."blockIds",
        "updatedAt" = EXCLUDED."updatedAt"
-     RETURNING phone, role, "blockIds", "createdAt", "updatedAt"`,
-    [phone, role, blockIds, now]
+     RETURNING phone, name, role, status, "blockIds", "createdAt", "updatedAt"`,
+    [phone, name, role, status, blockIds, now]
   );
   return res.status(201).json(rows[0]);
 });
 
+app.patch("/api/access/phones/:phone/status", async (req, res) => {
+  const access = await resolveAccess(req);
+  if (!ensureAdminAccess(access, res)) return;
+
+  const phone = normalizePhone(req.params.phone);
+  const status = String(req.body?.status || "").trim().toLowerCase();
+  if (!phone) {
+    return res.status(400).json({ error: "Valid phone is required" });
+  }
+  if (!VALID_ACCESS_STATUSES.includes(status)) {
+    return res.status(400).json({ error: "status must be one of: active, inactive" });
+  }
+  if (status === "inactive" && phone === access.phone) {
+    return res.status(400).json({ error: "You cannot deactivate the currently logged-in admin" });
+  }
+  const now = new Date().toISOString();
+  const { rows } = await pool.query(
+    `UPDATE phone_access
+     SET status = $2, "updatedAt" = $3
+     WHERE phone = $1
+     RETURNING phone, name, role, status, "blockIds", "createdAt", "updatedAt"`,
+    [phone, status, now]
+  );
+  if (rows.length === 0) {
+    return res.status(404).json({ error: "Phone access entry not found" });
+  }
+  return res.json(rows[0]);
+});
+
 app.delete("/api/access/phones/:phone", async (req, res) => {
+  const access = await resolveAccess(req);
+  if (!ensureAdminAccess(access, res)) return;
+
   const phone = normalizePhone(req.params.phone);
   if (!phone) {
     return res.status(400).json({ error: "Valid phone is required" });
   }
+  if (phone === access.phone) {
+    return res.status(400).json({ error: "You cannot deactivate the currently logged-in admin" });
+  }
+  const now = new Date().toISOString();
   const { rows } = await pool.query(
-    `DELETE FROM phone_access WHERE phone = $1 RETURNING phone, role, "blockIds"`,
-    [phone]
+    `UPDATE phone_access
+     SET status = 'inactive', "updatedAt" = $2
+     WHERE phone = $1
+     RETURNING phone, name, role, status, "blockIds", "createdAt", "updatedAt"`,
+    [phone, now]
   );
   if (rows.length === 0) {
     return res.status(404).json({ error: "Phone access entry not found" });

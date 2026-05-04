@@ -2,7 +2,8 @@ const { pool } = require("./db");
 
 const ROLE_EDIT = "edit";
 const ROLE_REVIEW = "review";
-const VALID_ROLES = [ROLE_EDIT, ROLE_REVIEW];
+const ROLE_ADMIN = "admin";
+const VALID_ROLES = [ROLE_EDIT, ROLE_REVIEW, ROLE_ADMIN];
 
 function normalizePhone(input) {
   const digits = String(input || "").replace(/\D/g, "");
@@ -33,7 +34,7 @@ async function getAccessByPhone(rawPhone) {
   const phone = normalizePhone(rawPhone);
   if (!phone) return null;
   const { rows } = await pool.query(
-    `SELECT phone, role, COALESCE("blockIds", ARRAY[]::TEXT[]) AS "blockIds"
+    `SELECT phone, name, role, status, COALESCE("blockIds", ARRAY[]::TEXT[]) AS "blockIds"
      FROM phone_access
      WHERE phone = $1`,
     [phone]
@@ -46,10 +47,13 @@ async function resolveAccess(req) {
   if (!phone) {
     return {
       phone: "",
+      name: "",
       authenticated: false,
       role: null,
       canEdit: false,
       canReview: false,
+      canAdmin: false,
+      status: null,
       blockIds: [],
       scope: "global",
     };
@@ -59,10 +63,29 @@ async function resolveAccess(req) {
   if (!profile) {
     return {
       phone,
+      name: "",
       authenticated: false,
       role: null,
       canEdit: false,
       canReview: false,
+      canAdmin: false,
+      status: null,
+      blockIds: [],
+      scope: "global",
+    };
+  }
+
+  const status = profile.status === "active" ? "active" : "inactive";
+  if (status !== "active") {
+    return {
+      phone,
+      name: profile.name || "",
+      authenticated: false,
+      role: profile.role || null,
+      canEdit: false,
+      canReview: false,
+      canAdmin: false,
+      status,
       blockIds: [],
       scope: "global",
     };
@@ -75,10 +98,13 @@ async function resolveAccess(req) {
 
   return {
     phone,
+    name: profile.name || "",
     authenticated: true,
     role,
-    canEdit: role === ROLE_EDIT || role === ROLE_REVIEW,
-    canReview: role === ROLE_REVIEW,
+    canEdit: role === ROLE_EDIT || role === ROLE_REVIEW || role === ROLE_ADMIN,
+    canReview: role === ROLE_REVIEW || role === ROLE_ADMIN,
+    canAdmin: role === ROLE_ADMIN,
+    status,
     blockIds,
     scope: blockIds.length > 0 ? "blocks" : "global",
   };
@@ -107,6 +133,7 @@ async function assertSchoolInScope(sourceKey, access) {
 module.exports = {
   ROLE_EDIT,
   ROLE_REVIEW,
+  ROLE_ADMIN,
   VALID_ROLES,
   normalizePhone,
   parseBlockIds,

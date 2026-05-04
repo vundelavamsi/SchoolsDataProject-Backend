@@ -28,9 +28,10 @@ Runs at `http://localhost:3001` by default.
 - `GET /api/options/classRanges`
 - `GET /api/schools?page=1&pageSize=25&search=...`
 - `GET /api/access?phone=...` (resolve mock phone permissions)
-- `GET /api/access/phones` (list configured phone access profiles)
-- `POST /api/access/phones` (upsert phone profile: `phone`, `role`, `blockIds`)
-- `DELETE /api/access/phones/:phone`
+- `GET /api/access/phones` (admin-only list of phone access profiles)
+- `POST /api/access/phones` (admin-only upsert: `phone`, `name`, `role`, `status`, `blockIds`)
+- `PATCH /api/access/phones/:phone/status` (admin-only set status to `active` or `inactive`)
+- `DELETE /api/access/phones/:phone` (admin-only soft remove: marks status as `inactive`)
 - `POST /api/edits`
 - `GET /api/edits`
 - `GET /api/edits/school/:sourceKey`
@@ -39,9 +40,11 @@ Runs at `http://localhost:3001` by default.
 
 ## Mock phone access model
 
-- Roles: `edit`, `review`
+- Roles: `edit`, `review`, `admin`
 - `review` can edit + approve/reject
+- `admin` can edit + review + manage user access profiles
 - `edit` can submit/re-edit and view own edit outcomes
+- User profile rows are soft-managed via `status` (`active` / `inactive`)
 - If `blockIds` is empty, scope is global
 - If `blockIds` is set, data is restricted to those blocks
 
